@@ -7,6 +7,8 @@ from cryptography.fernet import Fernet
 import tempfile
 import os
 
+#checking if the file is encrypted
+
 class LinkedInDashboard:
     def __init__(self, encrypted_db_path="linkedin_data.encrypted.db"):
         """Initialize dashboard with encrypted database."""
