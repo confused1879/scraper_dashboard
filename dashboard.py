@@ -7,8 +7,6 @@ from cryptography.fernet import Fernet
 import tempfile
 import os
 
-#checking if the file is encrypted
-
 class LinkedInDashboard:
     def __init__(self, encrypted_db_path="linkedin_data.encrypted.db"):
         """Initialize dashboard with encrypted database."""
@@ -193,26 +191,28 @@ class LinkedInDashboard:
             # Data table
             st.subheader("Profile Data")
             
+            # Display columns selection
+            display_cols = ['name', 'title', 'company', 'location', 'school_name', 
+                          'duration', 'connection_degree', 'mutual_connections', 'profile_url', 'about']
+            
             # Search functionality
-            search_term = st.text_input("Search profiles (name, title, or company)")
+            search_term = st.text_input("Search profiles (name, title, company, or about)")
             if search_term:
                 search_mask = (
                     filtered_df['name'].str.contains(search_term, case=False, na=False) |
                     filtered_df['title'].str.contains(search_term, case=False, na=False) |
-                    filtered_df['company'].str.contains(search_term, case=False, na=False)
+                    filtered_df['company'].str.contains(search_term, case=False, na=False) |
+                    filtered_df['about'].str.contains(search_term, case=False, na=False)
                 )
                 filtered_df = filtered_df[search_mask]
-            
-            # Display columns selection
-            display_cols = ['name', 'title', 'company', 'location', 'school_name', 
-                          'duration', 'connection_degree', 'mutual_connections', 'profile_url']
             
             st.dataframe(
                 filtered_df[display_cols],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "profile_url": st.column_config.LinkColumn("Profile URL")
+                    "profile_url": st.column_config.LinkColumn("Profile URL"),
+                    "about": st.column_config.TextColumn("About", width="large")
                 }
             )
             
