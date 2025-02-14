@@ -596,7 +596,7 @@ class LinkedInDashboard:
                 "Profile Distribution", 
                 "Job Titles", 
                 "Locations",
-                "DeepResearch Search"
+                "DeepSearch"
             ])
             
             with tab1:
@@ -638,7 +638,7 @@ class LinkedInDashboard:
                 st.plotly_chart(fig3, use_container_width=True)
             
             with tab4:
-                st.subheader("Jina DeepResearch Email Search")
+                st.subheader("Jina DeepSearch Email ")
                 
                 # Add search functionality for this tab
                 search_term = st.text_input("Search profiles (name, title, company)", key="deep_search_filter")
