@@ -592,11 +592,12 @@ class LinkedInDashboard:
             
             # Visualizations
             st.subheader("Data Analysis")
-            tab1, tab2, tab3, tab4 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "Profile Distribution", 
                 "Job Titles", 
                 "Locations",
-                "DeepSearch"
+                "DeepSearch",
+                "Batch DeepSearch"  # New tab
             ])
             
             with tab1:
@@ -638,7 +639,7 @@ class LinkedInDashboard:
                 st.plotly_chart(fig3, use_container_width=True)
             
             with tab4:
-                st.subheader("Jina DeepSearch Email ")
+                st.subheader("Jina DeepSearch Email")
                 
                 # Add search functionality for this tab
                 search_term = st.text_input("Search profiles (name, title, company)", key="deep_search_filter")
@@ -700,6 +701,12 @@ class LinkedInDashboard:
                                         if result['source']:
                                             st.metric("Source", result['source'])
                                     
+                                    # Display thoughts if available
+                                    if result['thoughts']:
+                                        with st.expander("Show Search Process"):
+                                            st.markdown("**Search Reasoning:**")
+                                            st.write(result['thoughts'])
+                                    
                                     # Copy button for the email
                                     if st.button("📋 Copy Email", key="copy_email_button"):
                                         pyperclip.copy(result['email'])
@@ -714,6 +721,139 @@ class LinkedInDashboard:
                             except Exception as e:
                                 st.error(f"Error during search: {str(e)}")
                                 st.error("Please check your Jina API key and try again.")
+            with tab5:
+                st.subheader("Batch Jina DeepSearch")
+                
+                # Initialize session state for storing selected profiles
+                if 'selected_profiles' not in st.session_state:
+                    st.session_state.selected_profiles = []
+                if 'search_results' not in st.session_state:
+                    st.session_state.search_results = []
+
+                # Search and select profiles
+                search_term = st.text_input("Search profiles (name, title, company)", key="batch_search_filter")
+                if search_term:
+                    search_mask = (
+                        filtered_df['name'].str.contains(search_term, case=False, na=False) |
+                        filtered_df['title'].str.contains(search_term, case=False, na=False) |
+                        filtered_df['company'].str.contains(search_term, case=False, na=False)
+                    )
+                    search_df = filtered_df[search_mask]
+                else:
+                    search_df = filtered_df
+
+                # Display profiles for selection
+                selected_row_index = st.selectbox(
+                    "Select Profile to Add to Batch",
+                    range(len(search_df)),
+                    format_func=lambda x: f"{search_df.iloc[x]['name']} - {search_df.iloc[x]['title']} at {search_df.iloc[x]['company']}",
+                    key="batch_profile_selector"
+                )
+
+                # Add to batch button
+                if st.button("Add to Batch", key="add_to_batch"):
+                    selected_row = search_df.iloc[selected_row_index]
+                    profile_info = {
+                        'name': selected_row['name'],
+                        'title': selected_row['title'],
+                        'company': selected_row['company'],
+                        'school': selected_row['school_name'],
+                        'profile_url': selected_row['profile_url'] if pd.notna(selected_row['profile_url']) else '',
+                        'domain': selected_row['domain_name'] if pd.notna(selected_row['domain_name']) else ''
+                    }
+                    
+                    # Check if profile is already in batch
+                    if not any(p['name'] == profile_info['name'] for p in st.session_state.selected_profiles):
+                        st.session_state.selected_profiles.append(profile_info)
+                        st.success(f"Added {profile_info['name']} to batch")
+                    else:
+                        st.warning("Profile already in batch")
+
+                # Display selected profiles
+                if st.session_state.selected_profiles:
+                    st.write("### Selected Profiles")
+                    
+                    # Create a DataFrame of selected profiles for display
+                    selected_df = pd.DataFrame(st.session_state.selected_profiles)
+                    st.dataframe(
+                        selected_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                    
+                    # Clear batch button
+                    if st.button("Clear Batch", key="clear_batch"):
+                        st.session_state.selected_profiles = []
+                        st.session_state.search_results = []
+                        st.success("Batch cleared")
+
+                    # Search batch button
+                    if st.button("Search Batch with DeepResearch", key="search_batch"):
+                        st.session_state.search_results = []  # Clear previous results
+                        
+                        progress_bar = st.progress(0)
+                        for idx, profile in enumerate(st.session_state.selected_profiles):
+                            with st.spinner(f"Searching {profile['name']}..."):
+                                try:
+                                    jina_client = JinaDeepResearch()
+                                    result = jina_client.search_email({
+                                        'full_name': profile['name'],
+                                        'company': profile['company'],
+                                        'title': profile['title'],
+                                        'linkedin_url': profile['profile_url']
+                                    })
+                                    
+                                    # Add search result to profile info
+                                    search_result = {
+                                        **profile,
+                                        'email': result['email'] if result['email'] else 'Not found',
+                                        'confidence': result['confidence'],
+                                        'source': result['source'] if result['source'] else 'N/A',
+                                        'thoughts': result['thoughts'] if result['thoughts'] else 'N/A'
+                                    }
+                                    st.session_state.search_results.append(search_result)
+                                    
+                                except Exception as e:
+                                    st.error(f"Error searching {profile['name']}: {str(e)}")
+                                    search_result = {
+                                        **profile,
+                                        'email': 'Error',
+                                        'confidence': 'N/A',
+                                        'source': str(e),
+                                        'thoughts': 'N/A'
+                                    }
+                                    st.session_state.search_results.append(search_result)
+                                
+                                # Update progress
+                                progress_bar.progress((idx + 1) / len(st.session_state.selected_profiles))
+                        
+                        st.success("Batch search completed!")
+
+                # Display and export results
+                if st.session_state.search_results:
+                    st.write("### Search Results")
+                    
+                    # Create DataFrame from results
+                    results_df = pd.DataFrame(st.session_state.search_results)
+                    
+                    # Display results with thoughts in expandable sections
+                    for idx, row in results_df.iterrows():
+                        with st.expander(f"{row['name']} - {row['email']}"):
+                            st.write(f"**Confidence:** {row['confidence']}")
+                            st.write(f"**Source:** {row['source']}")
+                            if row['thoughts'] != 'N/A':
+                                st.markdown("**Search Process:**")
+                                st.write(row['thoughts'])
+                    
+                    # Export to CSV with thoughts included
+                    csv = results_df.to_csv(index=False)
+                    st.download_button(
+                        label="Download Results CSV",
+                        data=csv,
+                        file_name="jina_deepsearch_results.csv",
+                        mime="text/csv",
+                        key="download_results"
+                    )
 
             # Data table
             st.subheader("Profile Data")

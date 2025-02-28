@@ -3,19 +3,18 @@ import requests
 import json
 from typing import Dict, Optional, Union
 from dotenv import load_dotenv
+import streamlit as st
+import re
 
 class JinaDeepResearch:
     """Client for interacting with Jina DeepResearch API"""
     
     def __init__(self):
-        # Load environment variables from .env file
-        load_dotenv()
-        
-        # Get API keys from environment variables
-        self.jina_api_key = os.getenv('JINA_API_KEY')
-        if not self.jina_api_key:
-            raise ValueError("JINA_API_KEY environment variable is required")
+        # Get API key from Streamlit secrets instead of env
+        if 'JINA_API_KEY' not in st.secrets:
+            raise ValueError("JINA_API_KEY not found in Streamlit secrets")
             
+        self.jina_api_key = st.secrets['JINA_API_KEY']
         self.base_url = "https://deepsearch.jina.ai/v1/chat/completions"
     
     def search_email(self, person_info: Dict[str, str]) -> Dict[str, Union[str, None]]:
@@ -34,20 +33,32 @@ class JinaDeepResearch:
                 - email: Found email address or None
                 - confidence: Confidence score (high/medium/low)
                 - source: Source of the email if found
+                - thoughts: Extracted thought process
                 - raw_response: Full API response
         """
-        # Construct targeted search query
-        query = f"""Find the work email address for this person:
+        query = f"""Find the current work email address for this person:
         Name: {person_info.get('full_name', '')}
-        Company: {person_info.get('company', '')}
-        Title: {person_info.get('title', '')}
-        LinkedIn: {person_info.get('linkedin_url', '')}
-        
-        Please return only their most likely current work email address with confidence level and source."""
+        Current Company: {person_info.get('company', '')}
+        Current Title: {person_info.get('title', '')}
+        LinkedIn Profile: {person_info.get('linkedin_url', '')}
+
+        Instructions:
+        1. Search for their most current work email address
+        2. Focus on official company sources, press releases, or verified business listings
+        3. Check for email patterns used at their current company
+        4. Verify any found email against company domain records
+        5. Assess confidence level (high/medium/low) based on source reliability
+        6. Include source of information and your reasoning process
+
+        Please format response with:
+        <think>Your step-by-step reasoning process</think>
+        Email: [found_email]
+        Confidence: [high/medium/low]
+        Source: [where the email was found]
+        """
         
         response = self.query(query)
         
-        # Parse response to extract email
         try:
             content = response['choices'][0]['message']['content']
             
@@ -56,28 +67,47 @@ class JinaDeepResearch:
                 'email': None,
                 'confidence': 'low',
                 'source': None,
+                'thoughts': None,
                 'raw_response': content
             }
             
-            # Basic email extraction - you may want to enhance this parsing
+            # Extract thoughts - try both <think> tags and reasoning sections
+            thoughts = []
+            
+            # Try <think> tags
+            think_matches = re.findall(r'<think>(.*?)</think>', content, re.DOTALL)
+            if think_matches:
+                thoughts.extend(think_matches)
+            
+            # Try numbered reasoning or steps
+            step_matches = re.findall(r'\d+\.\s*(.*?)(?=\d+\.|$)', content, re.DOTALL)
+            if step_matches:
+                thoughts.extend(step_matches)
+            
+            if thoughts:
+                result['thoughts'] = '\n'.join(t.strip() for t in thoughts)
+            
+            # Extract email
             if '@' in content:
-                # Extract first email-like string
-                import re
                 email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', content)
                 if email_match:
                     result['email'] = email_match.group(0)
-                
-                # Determine confidence
-                if 'high confidence' in content.lower():
-                    result['confidence'] = 'high'
-                elif 'medium confidence' in content.lower():
-                    result['confidence'] = 'medium'
-                
-                # Try to extract source
-                if 'source:' in content.lower():
-                    source_match = re.search(r'source:(.+?)(?:\n|$)', content, re.I)
-                    if source_match:
-                        result['source'] = source_match.group(1).strip()
+            
+            # Extract confidence
+            if 'confidence:' in content.lower():
+                confidence_match = re.search(r'confidence:\s*(high|medium|low)', content, re.I)
+                if confidence_match:
+                    result['confidence'] = confidence_match.group(1).lower()
+            elif 'high confidence' in content.lower():
+                result['confidence'] = 'high'
+            elif 'medium confidence' in content.lower():
+                result['confidence'] = 'medium'
+            
+            # Extract source
+            if 'source:' in content.lower():
+                source_match = re.search(r'source:\s*(.+?)(?:\n|$)', content, re.I)
+                if source_match:
+                    result['source'] = source_match.group(1).strip()
             
             return result
             
@@ -87,6 +117,7 @@ class JinaDeepResearch:
                 'email': None,
                 'confidence': 'low',
                 'source': None,
+                'thoughts': None,
                 'raw_response': str(response)
             }
 
@@ -109,7 +140,14 @@ class JinaDeepResearch:
         
         data = {
             "model": "jina-deepsearch-v1",
-            "messages": [{"role": "user", "content": question}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": question
+                }
+            ],
+            "stream": False,  # Set to False for single response
+            "reasoning_effort": "high",  # Add reasoning effort parameter
             "max_budget": max_budget,
             "max_bad_attempts": max_bad_attempts
         }
