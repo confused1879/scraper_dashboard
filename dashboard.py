@@ -19,6 +19,7 @@ from bs4 import BeautifulSoup
 from html import unescape
 from urllib.parse import urlparse
 from jina_research import JinaDeepResearch
+from lta_dashboard import LTADashboard
 
 class LinkedInDashboard:
     def __init__(self, encrypted_db_path="linkedin_data.encrypted.db"):
@@ -592,12 +593,13 @@ class LinkedInDashboard:
             
             # Visualizations
             st.subheader("Data Analysis")
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
                 "Profile Distribution", 
                 "Job Titles", 
                 "Locations",
                 "DeepSearch",
-                "Batch DeepSearch"  # New tab
+                "Batch DeepSearch",
+                "LTA Schools Dashboard"  # New tab
             ])
             
             with tab1:
@@ -854,6 +856,415 @@ class LinkedInDashboard:
                         mime="text/csv",
                         key="download_results"
                     )
+
+            with tab6:
+                st.subheader("LTA Schools Dashboard")
+                st.markdown("---")
+                st.markdown("### LTA Tennis Schools Data Explorer")
+                st.markdown("Filter and analyze LTA school and contact information")
+                
+                # Initialize LTA Dashboard
+                lta_dashboard = LTADashboard()
+                
+                # Check if database exists
+                if not os.path.exists(lta_dashboard.db_path):
+                    st.error(f"Database file {lta_dashboard.db_path} not found. Please run the lta_db_loader.py script first.")
+                else:
+                    try:
+                        # Load LTA data with a custom query to fix the team name issue
+                        conn = lta_dashboard.get_connection()
+                        try:
+                            # Load clubs data
+                            lta_dashboard.clubs_df = pd.read_sql_query("""
+                                SELECT * FROM clubs
+                            """, conn)
+                            
+                            # Load teams data
+                            lta_dashboard.teams_df = pd.read_sql_query("""
+                                SELECT * FROM teams
+                            """, conn)
+                            
+                            # Load contacts data with team and club information - fixed query
+                            lta_dashboard.contacts_df = pd.read_sql_query("""
+                                SELECT 
+                                    c.contact_id, c.name, c.phone, c.email,
+                                    tc.role, tc.team_id, tc.tournament_id,
+                                    t.team_name, t.school_name, t.gender,
+                                    cl.club_name, cl.location
+                                FROM contacts c
+                                JOIN team_contacts tc ON c.contact_id = tc.contact_id
+                                JOIN teams t ON tc.team_id = t.team_id AND tc.tournament_id = t.tournament_id
+                                LEFT JOIN clubs cl ON t.club_id = cl.club_id AND t.tournament_id = cl.tournament_id
+                            """, conn)
+                            
+                            # Debug query to check raw team data
+                            raw_teams_df = pd.read_sql_query("""
+                                SELECT * FROM teams LIMIT 10
+                            """, conn)
+                            
+                            # Fix team_name if it's None or NaN
+                            def fix_team_name(row):
+                                if pd.isna(row['team_name']) or row['team_name'] is None:
+                                    # Try to construct a team name from school_name and gender
+                                    school = row['school_name'] if pd.notna(row['school_name']) else ''
+                                    gender = row['gender'] if pd.notna(row['gender']) else ''
+                                    if school and gender:
+                                        return f"{school} {gender}"
+                                    elif school:
+                                        return school
+                                    else:
+                                        return "Unknown Team"
+                                return row['team_name']
+                            
+                            # Apply the fix to the contacts dataframe
+                            lta_dashboard.contacts_df['team_name'] = lta_dashboard.contacts_df.apply(fix_team_name, axis=1)
+                            
+                            # Load matches data
+                            lta_dashboard.matches_df = pd.read_sql_query("""
+                                SELECT * FROM matches
+                            """, conn)
+                            
+                            # Get unique values for filters
+                            lta_dashboard.club_names = sorted(lta_dashboard.clubs_df['club_name'].dropna().unique())
+                            lta_dashboard.school_names = sorted(lta_dashboard.teams_df['school_name'].dropna().unique())
+                            lta_dashboard.locations = sorted(pd.concat([
+                                lta_dashboard.clubs_df['location'].dropna(),
+                                lta_dashboard.contacts_df['location'].dropna()
+                            ]).unique())
+                            lta_dashboard.roles = sorted(lta_dashboard.contacts_df['role'].dropna().unique())
+                            lta_dashboard.genders = sorted(lta_dashboard.teams_df['gender'].dropna().unique())
+                            
+                        finally:
+                            conn.close()
+                        
+                        # Sidebar filters for LTA data
+                        st.sidebar.markdown("---")
+                        st.sidebar.header("LTA Filters")
+                        
+                        # School/Club filter
+                        filter_type = st.sidebar.radio(
+                            "Filter LTA by:",
+                            ["All", "School", "Club"],
+                            key="lta_filter_type"
+                        )
+                        
+                        if filter_type == "School":
+                            selected_schools = st.sidebar.multiselect(
+                                "Select LTA Schools",
+                                lta_dashboard.school_names,
+                                default=[],
+                                key="lta_schools"
+                            )
+                        elif filter_type == "Club":
+                            selected_clubs = st.sidebar.multiselect(
+                                "Select LTA Clubs",
+                                lta_dashboard.club_names,
+                                default=[],
+                                key="lta_clubs"
+                            )
+                        
+                        # Location filter
+                        selected_locations = st.sidebar.multiselect(
+                            "Select LTA Locations",
+                            lta_dashboard.locations,
+                            default=[],
+                            key="lta_locations"
+                        )
+                        
+                        # Role filter
+                        selected_roles = st.sidebar.multiselect(
+                            "Select LTA Roles",
+                            lta_dashboard.roles,
+                            default=[],
+                            key="lta_roles"
+                        )
+                        
+                        # Gender filter
+                        selected_genders = st.sidebar.multiselect(
+                            "Select LTA Team Gender",
+                            lta_dashboard.genders,
+                            default=[],
+                            key="lta_genders"
+                        )
+                        
+                        # Apply filters to contacts dataframe
+                        filtered_contacts = lta_dashboard.contacts_df.copy()
+                        
+                        if filter_type == "School" and selected_schools:
+                            filtered_contacts = filtered_contacts[filtered_contacts['school_name'].isin(selected_schools)]
+                        elif filter_type == "Club" and selected_clubs:
+                            filtered_contacts = filtered_contacts[filtered_contacts['club_name'].isin(selected_clubs)]
+                        
+                        if selected_locations:
+                            filtered_contacts = filtered_contacts[filtered_contacts['location'].isin(selected_locations)]
+                        
+                        if selected_roles:
+                            filtered_contacts = filtered_contacts[filtered_contacts['role'].isin(selected_roles)]
+                        
+                        if selected_genders:
+                            filtered_contacts = filtered_contacts[filtered_contacts['gender'].isin(selected_genders)]
+                        
+                        # Display metrics
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Total LTA Contacts", len(filtered_contacts))
+                        with col2:
+                            st.metric("LTA Schools/Clubs", len(filtered_contacts[['school_name', 'club_name']].drop_duplicates()))
+                        with col3:
+                            st.metric("LTA Teams", len(filtered_contacts['team_id'].unique()))
+                        with col4:
+                            st.metric("LTA Locations", len(filtered_contacts['location'].dropna().unique()))
+                        
+                        # Create tabs for different LTA views
+                        st.markdown("### LTA Data Views")
+                        lta_tab1, lta_tab2, lta_tab3, lta_tab4 = st.tabs([
+                            "LTA Contact List", 
+                            "LTA School/Club Distribution", 
+                            "LTA Team Information",
+                            "LTA Match Schedule"
+                        ])
+                        
+                        with lta_tab1:
+                            st.subheader("Contact List")
+                            
+                            # Debug information to help identify issues
+                            with st.expander("Debug Information"):
+                                st.write("### Data Sample")
+                                st.write("This shows a sample of the raw data to help identify any issues:")
+                                st.dataframe(
+                                    filtered_contacts.head(5),
+                                    use_container_width=True
+                                )
+                                
+                                # Show raw team data
+                                st.write("### Raw Team Data")
+                                st.write("This shows the raw data from the teams table:")
+                                st.dataframe(
+                                    raw_teams_df,
+                                    use_container_width=True
+                                )
+                                
+                                # Show column names and types - Fixed to prevent type conversion errors
+                                st.write("### Column Information")
+                                col_info = pd.DataFrame({
+                                    'Column': filtered_contacts.columns,
+                                    'Type': [str(dtype) for dtype in filtered_contacts.dtypes]
+                                })
+                                
+                                # Add sample values safely
+                                sample_values = []
+                                for col in filtered_contacts.columns:
+                                    try:
+                                        values = filtered_contacts[col].dropna().head(3).tolist()
+                                        sample_values.append(str(values) if values else "[]")
+                                    except Exception as e:
+                                        sample_values.append(f"Error: {str(e)}")
+                                
+                                col_info['Sample Values'] = sample_values
+                                st.dataframe(col_info, use_container_width=True)
+                            
+                            # Search functionality
+                            search_term = st.text_input("Search contacts (name, email, school, club)", key="lta_contact_search")
+                            if search_term:
+                                search_mask = (
+                                    filtered_contacts['name'].str.contains(search_term, case=False, na=False) |
+                                    filtered_contacts['email'].str.contains(search_term, case=False, na=False) |
+                                    filtered_contacts['school_name'].str.contains(search_term, case=False, na=False) |
+                                    filtered_contacts['club_name'].str.contains(search_term, case=False, na=False) |
+                                    filtered_contacts['team_name'].str.contains(search_term, case=False, na=False)
+                                )
+                                filtered_contacts = filtered_contacts[search_mask]
+                            
+                            # Display contacts in a table
+                            display_cols = [
+                                'name', 'email', 'phone', 'school_name', 'gender'
+                            ]
+                            
+                            # Remove duplicate contacts (same person might be associated with multiple teams)
+                            deduplicated_contacts = filtered_contacts.drop_duplicates(subset=['contact_id'])
+                            
+                            # Ensure all columns are of the correct type for display
+                            display_df = deduplicated_contacts[display_cols].copy()
+                            
+                            # Convert all columns to string for safe display
+                            for col in display_df.columns:
+                                display_df[col] = display_df[col].astype(str).replace('nan', '')
+                            
+                            st.dataframe(
+                                display_df,
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "email": st.column_config.LinkColumn("Email", width="medium"),
+                                    "name": st.column_config.TextColumn("Contact Name", width="medium"),
+                                    "phone": st.column_config.TextColumn("Phone", width="medium"),
+                                    "school_name": st.column_config.TextColumn("School", width="medium"),
+                                    "gender": st.column_config.TextColumn("Gender", width="small")
+                                }
+                            )
+                            
+                            # Export functionality
+                            if st.button("Export Filtered Contacts to CSV", key="lta_export_contacts"):
+                                # Use the display_df for export to ensure consistent data
+                                csv = display_df.to_csv(index=False)
+                                st.download_button(
+                                    label="Download CSV",
+                                    data=csv,
+                                    file_name="lta_contacts.csv",
+                                    mime="text/csv",
+                                    key="lta_download_contacts"
+                                )
+                        
+                        with lta_tab2:
+                            st.subheader("School/Club Distribution")
+                            
+                            # Create distribution chart based on filter type
+                            if filter_type == "School" or filter_type == "All":
+                                school_counts = filtered_contacts['school_name'].value_counts().reset_index()
+                                school_counts.columns = ['school', 'count']
+                                
+                                if not school_counts.empty:
+                                    fig1 = px.bar(
+                                        school_counts,
+                                        x='school',
+                                        y='count',
+                                        title="Contacts by School",
+                                        labels={'school': 'School', 'count': 'Number of Contacts'}
+                                    )
+                                    st.plotly_chart(fig1, use_container_width=True)
+                                else:
+                                    st.info("No school data available with current filters")
+                            
+                            if filter_type == "Club" or filter_type == "All":
+                                club_counts = filtered_contacts['club_name'].value_counts().reset_index()
+                                club_counts.columns = ['club', 'count']
+                                
+                                if not club_counts.empty:
+                                    fig2 = px.bar(
+                                        club_counts,
+                                        x='club',
+                                        y='count',
+                                        title="Contacts by Club",
+                                        labels={'club': 'Club', 'count': 'Number of Contacts'}
+                                    )
+                                    st.plotly_chart(fig2, use_container_width=True)
+                                else:
+                                    st.info("No club data available with current filters")
+                            
+                            # Location distribution
+                            location_counts = filtered_contacts['location'].value_counts().head(10).reset_index()
+                            location_counts.columns = ['location', 'count']
+                            
+                            if not location_counts.empty:
+                                fig3 = px.pie(
+                                    location_counts,
+                                    values='count',
+                                    names='location',
+                                    title="Top 10 Locations"
+                                )
+                                st.plotly_chart(fig3, use_container_width=True)
+                        
+                        with lta_tab3:
+                            st.subheader("Team Information")
+                            
+                            # Get unique teams from filtered contacts
+                            team_ids = filtered_contacts['team_id'].unique()
+                            teams_data = lta_dashboard.teams_df[lta_dashboard.teams_df['team_id'].isin(team_ids)]
+                            
+                            # Search functionality for teams
+                            team_search = st.text_input("Search teams (name, school, club)", key="lta_team_search")
+                            if team_search:
+                                search_mask = (
+                                    teams_data['team_name'].str.contains(team_search, case=False, na=False) |
+                                    teams_data['school_name'].str.contains(team_search, case=False, na=False)
+                                )
+                                teams_data = teams_data[search_mask]
+                            
+                            # Display teams in a table
+                            team_display_cols = [
+                                'team_name', 'school_name', 'gender', 
+                                'draw_name', 'url'
+                            ]
+                            
+                            st.dataframe(
+                                teams_data[team_display_cols],
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "url": st.column_config.LinkColumn("Team URL"),
+                                    "team_name": st.column_config.TextColumn("Team Name", width="medium"),
+                                    "school_name": st.column_config.TextColumn("School", width="medium"),
+                                    "gender": st.column_config.TextColumn("Gender", width="small"),
+                                    "draw_name": st.column_config.TextColumn("Draw/Competition", width="medium")
+                                }
+                            )
+                            
+                            # Team gender distribution
+                            gender_counts = teams_data['gender'].value_counts().reset_index()
+                            gender_counts.columns = ['gender', 'count']
+                            
+                            if not gender_counts.empty:
+                                fig4 = px.pie(
+                                    gender_counts,
+                                    values='count',
+                                    names='gender',
+                                    title="Team Gender Distribution"
+                                )
+                                st.plotly_chart(fig4, use_container_width=True)
+                        
+                        with lta_tab4:
+                            st.subheader("Match Schedule")
+                            
+                            # Get matches related to filtered teams
+                            team_ids = filtered_contacts['team_id'].unique()
+                            matches_data = lta_dashboard.matches_df[
+                                (lta_dashboard.matches_df['home_team_id'].isin(team_ids)) | 
+                                (lta_dashboard.matches_df['away_team_id'].isin(team_ids))
+                            ]
+                            
+                            # Search functionality for matches
+                            match_search = st.text_input("Search matches (team names)", key="lta_match_search")
+                            if match_search:
+                                search_mask = (
+                                    matches_data['home_team_name'].str.contains(match_search, case=False, na=False) |
+                                    matches_data['away_team_name'].str.contains(match_search, case=False, na=False)
+                                )
+                                matches_data = matches_data[search_mask]
+                            
+                            # Display matches in a table
+                            match_display_cols = [
+                                'match_date', 'match_time', 'home_team_name', 
+                                'away_team_name', 'score', 'status', 'url'
+                            ]
+                            
+                            st.dataframe(
+                                matches_data[match_display_cols],
+                                use_container_width=True,
+                                hide_index=True,
+                                column_config={
+                                    "url": st.column_config.LinkColumn("Match URL"),
+                                    "match_date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                                    "match_time": st.column_config.TextColumn("Time", width="small"),
+                                    "home_team_name": st.column_config.TextColumn("Home Team", width="medium"),
+                                    "away_team_name": st.column_config.TextColumn("Away Team", width="medium"),
+                                    "score": st.column_config.TextColumn("Score", width="small"),
+                                    "status": st.column_config.TextColumn("Status", width="small")
+                                }
+                            )
+                            
+                            # Export functionality
+                            if st.button("Export Filtered Matches to CSV", key="lta_export_matches"):
+                                csv = matches_data[match_display_cols].to_csv(index=False)
+                                st.download_button(
+                                    label="Download CSV",
+                                    data=csv,
+                                    file_name="lta_matches.csv",
+                                    mime="text/csv",
+                                    key="lta_download_matches"
+                                )
+                    except Exception as e:
+                        st.error(f"Error loading LTA data: {str(e)}")
+                        st.error("Please make sure the LTA database exists and contains the required tables.")
 
             # Data table
             st.subheader("Profile Data")
